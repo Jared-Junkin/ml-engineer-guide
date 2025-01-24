@@ -4108,32 +4108,50 @@ Let \(\pi_\theta(a|s)\) be a policy parameterized by \(\theta\), outputting the 
 
 Where \(r_t\) is the probability ratio between the new policy and the old policy:
 \[r_t = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{OLD}}}(a|s)}\]
-Basically this ensures that
-
+Basically this insures 
 \begin{itemize}
 \item In the event of a positive reward \(A_t > 0\), it will clip the policy ratio \(r_t\) to ensure it doesn't jump too drastically (more conservative option)
 \item In the event of a negative reward \(A_t < 0\), it will \emph{not} clip \(r_t\), so if \(r_t > 1\) (after update it is more likely to select bad option) the left side will be more negative. meanwhile if \(r_t \approx 0\) it \emph{will} clip \(r_t\), so there will be a negative gradient even if \(r_t \approx 0\). so in this case it picks the more extreme option always).
 \end{itemize}
 
-So basically it ensures the we proceed at a measured pace when the model does well, and strongly corrects when the model does poorly. \\
+So basically it ensures the we proceed at a measured pace when the model does well, and strongly corrects when the model does poorly. This is called trust region optimization. \\
 
 We then update the parameters using the policy gradient: 
 
 \[\theta \leftarrow \theta + \alpha \nabla_\theta\mathcal{L}^{\text{CLIP}}(\theta)\]
 
-Because PPO is on-policy (the model actually takes the actions it believes are best) it must rely on on-policy sampling balancing exploration and exploitation. This typically is done wtih some kind of stochastic sampling method that is still on-policy, while ensuring intrinsic exploration.
+Because PPO is on-policy (the model actually takes the actions it believes are best) it must rely on on-policy sampling balancing exploration and exploitation. This typically is done wtih some kind of stochastic sampling method that is still on-policy, while ensuring intrinsic exploration. The gradient of this function with respect to \(\theta\) is 
+
+\[\nabla_\theta \mathcal{L}^{\text{CLIP}}(\theta) =  \mathbb{E} \left[ \nabla_\theta \text{log}\pi_\theta(a|s) \cdot \min (r_t(\theta)A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1+\epsilon)A_t)\right]\]
+
+Which simplifies to 0 if outside the clipping range (because the probability ratio is outisde the clipping range, \(\mathcal{L}^{\text{CLIP}}(\theta)\) is constant. Inside the clipping range it is 
+
+\[\nabla_\theta \mathcal{L}^{\text{CLIP}}(\theta) = r_t(\theta)A_t  \nabla_\theta \text{log}\pi_\theta(a|s) \]
+
+Note that \(r_t(\theta)\) is outisde the gradient because 
+\[r_t = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{OLD}}}(a|s)}\]
+\(\pi_{\theta_{\text{OLD}}}(a|s)\) does not depend on \(\theta\), but \(\pi_\theta(a|s)\) \emph{does} depend on \(\theta\). When we take the derivative wtih respect to \(\theta\) we use the log-derivative trick to get 
+\[\nabla_\theta(r_t(\theta)A_t) = A_t \cdot r_t(\theta)\nabla_\theta \text{log}\pi_\theta(a_t|s_t)\]
+So we do take the derivative with respect to \(r_t\) when calculating the gradient of the objective function, but because of the log derivative function we don't have to differentiate \(r_t\) directly.
 
 \textbf{Question}: How does this actually balance the tradeoff between exploration and exploitation? \\
 
-\textbf{Answer}: PPO doesn't expliclty include any kind of exploration policy like epsilon greedy exploration. Trust region optimization algorithms like this one, which ensure updates on model parameters don't deviate too far from the current policy, are vulnerable to converging to local optima, especially in the case of sparse reward signals. I imagine the key is to carefully fine-tune the hyperparameters in post training to make sure the reward signal won't encourage the model to prematurely converge, and to monitor training carefully to make sure it doesn't converge to local maxima. Also, here are a few things that help with avoiding local maxima:
+\textbf{Answer}: PPO doesn't expliclty include any kind of exploration policy like epsilon greedy exploration. Trust region optimization algorithms like this one, which ensure updates on model parameters don't deviate too far from the current policy, are vulnerable to converging to local optima, especially in the case of sparse reward signals. I imagine the key is to carefully fine-tune the hyperparameters in post training to make sure the reward signal won't encourage the model to prematurely converge, and to monitor training carefully to make sure it doesn't converge to local maxima. Also, here are a few things that help with avoiding local maxima:\\
 
-%1. clipping prevents premature exploitation by preventing the model from convergin gto quickly to a suboptimal action
-%2. entropy regularization
-%3. GAE
+\begin{enumerate}
+\item Entropy Regularization (see section below on that)
+\item Clipping inherently discourages premature exploration by preventing the model from taking drastic, large policy updates that converge quickly to suboptimal solutions
+\item GAE (don't have a section on this yet)...
+\end{enumerate}
 
-%Instead, it uses \textbf{Trust Region Optimization} to balance exploration and exploitation. The key idea is that we ensure updates on the model parameters do not deviate too far from the current policy. 
+With entropy regularization involved, the gradient with respect to the loss function becomes:
 
-% \textbf{Question}: Why is this RL Method specifically the one that gets used for RLHF with LLMs?
+\[
+\nabla_\theta \mathcal{L}_{\text{CLIP}}(\theta) =  \mathbb{E} \left[ \nabla_\theta \text{log}\pi_\theta(a|s) \cdot \min (r_t(\theta)A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1+\epsilon)A_t) + \beta \nabla_\theta H(\pi_\theta(\cdot \mid s))\right]
+\]
+Where
+\[\nabla_\theta H(\pi_\theta(\cdot \mid s))  =  -\sum_{a \in A} (\pi_\theta(a|s)\text{log}\pi_\theta(a|s) + \pi_\theta(a|s)\nabla_\theta \text{log} \pi_\theta (a|s))\]
+And \(\beta \in [0,1]\) is a hyperparameter controlling how exploration / exploitation should be balanced. Higher \(\beta\) means more exploration. Details of this derivation are below in entropy regularization section. As noted below, the objective function is something we want to maximize in RL algortihms, and that means it will be pushed towards policies with higher entropy.
 
 \subsection{Actor-Critic (Advantage Actor Critic)}
 Actor-Critic Methods combnie policy-based and value-based RL approaches. The idea is to use a value based "Critic" to reduce the variance of policy gradient updates while still using the policy (Actor) to make decisions:
@@ -4199,10 +4217,20 @@ Entropy regularization is a technique used in reinforcement learning to encourag
 \[H(\pi_\theta(\cdot|s)) = -\sum_{a\in A}\pi_\theta(a|s)\log \pi_\theta(a|s)\]
 So the idea is that if there is a single action \(a\in A\) where \(\pi_\theta(a|s) \rightarrow 1\), then  \(H(\pi_\theta(\cdot|s)) \rightarrow 0\) because of this logarithm property:
 \[\text{lim}_{x \rightarrow 0} x\log x = 0\]
+With no entropy regularization, the objective function we seek to maximize (the expected cumulative rewards over a given rollout \(\tau\)) is:
+\[
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{\tau} r_t\right]
+\]
+With entropy regularization, this becomes:
+\[
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{\tau} r_t + \beta H(\pi_\theta(\cdot \mid s)) \right]
+\]
 
-
-
-
+where \(\beta > 0\) is a hyperparameter controlling the trade-off between exploration (higher entropy means more exploration) and exploitation (lower entropy means greater reward maximization and more exploitation). The gradient of this whole function with respect to the weights \(\theta\) is calculated with the policy gradient theorem:
+\[\nabla_\theta J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\nabla_\theta \text{log}\pi_\theta (\tau)\sum_{t=0}^\tau  r_t + \nabla_\theta \beta H(\pi_\theta(\cdot \mid s))\right]\]
+Where
+\[ \nabla_\theta \beta H(\pi_\theta(\cdot \mid s)) = -\sum_{a \in A} (\pi_\theta(a|s)\text{log}\pi_\theta(a|s) + \pi_\theta(a|s)\nabla_\theta \text{log} \pi_\theta (a|s))\]
+By the product rule. This term gets larger as entropy increases, and since we're trying to \emph{maximize} the objective function, the model is therefore encouraged to explore. 
 \section{Variational Autoencoders}
 A Variational Autoencoder (VAE) is a deep generative neural network which maps some input image (I'm going to pretend we're working on images here, but it doesn't have to be an image) to a \textbf{probability distribution}  in an n-dimensional latent space. Then, we sample from that distribution at inference time to generate new images.\\
 \subsection{Training}
