@@ -3874,6 +3874,99 @@ Typical loss function for text-generation is categorical crossentropy, where eac
 \item Process input tokens simultaneously in parallel, rather than sequentially (more efficient and scalable)
 \item Accurately capture contextual information better than other models.
 \end{enumerate}
+\section{Flash Attention}
+Flash Attention is a version of Attention (see transformers section) that is optimized to accelerate attention computation in transformer-based models by reducing memory complexity, while maintaining mathematical equivalence with the standard attention mechanism. \\
+
+Normal self-attention has \(O(n^2d)\) time complexity and \(O(n^2)\) memory complexity, where 
+\begin{itemize}
+\item \(n\) is the sequence length (T)
+\item \(d\) is the embedding dimension (C)
+\end{itemize}
+Given Queries \(Q \in \mathbb{R}^{n \times d}\), Keys \(K \in \mathbb{R}^{n \times d}\), and Values matrices \(V \in \mathbb{R}^{n \times d}\), the scaled dot product attention is
+\[\text{Attention}(Q,K,V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\cdot V\right)\]
+where the attention scores \(S\) is
+\[
+S = \frac{QK^T}{\sqrt{d}} \in \mathbb{R}^{n\times n}
+\]
+And we apply the softmax row-wise 
+\[
+P = \text{softmax}(S) \in \mathbb{R}^{n\times n}
+\] 
+to get the output
+
+\[
+\text{Output} = PV \in \mathbb{R}^{n\times d}
+\]
+
+In Flash Attention, we do the exact same operations, but instead of storing the entire attention matrix \(S\) and probability matrix \(P\) in memory, we compute them in small "blocks" that fit into fast on-chip SRAM (shared random access memory). Mathematically this looks like: 
+% Equation with Sij
+\[
+S_{ij} = \frac{Q_i K_j^T}{\sqrt{d}}, \quad i, j \in [0, B)
+\]
+where \( B \) represents the block size that fits into shared memory.
+
+And for the probability matrix equation:
+% Pij
+\[
+P_{ij} = \frac{\exp(S_{ij} - m_i)}{\sum_j \exp(S_{ij} - m_i)}
+\]
+where \( m_i \) is the row-wise maximum for numerical stability.
+
+% 2x2 table showing comparison of time and space complexity for standard self-attention and flash attention
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Method} & \textbf{Time Complexity} & \textbf{Space Complexity} \\
+\hline
+Standard Self-Attention & \( O(n^2 d) \) & \( O(n^2) \) \\
+\hline
+Flash Attention & \( O(n^2 d) \) & \( O(n) \) \\
+\hline
+\end{tabular}
+\caption{Comparison of time and space complexity between standard self-attention and Flash Attention.}
+\end{table}
+
+This means that we asymptotically improve our memory requirements while preserving mathematical equivalence and without harming our asymptotic time complexity.\\
+
+\textbf{Question}: Why does this not reduce model parallelism by introducing serial operations? Surely the blocks are computed sequentially...\\
+
+\textbf{Answer}: The blocks can be worked on in overlapping stages across different GPU processing units, with different blocks of the attention and probability matrices \(S\) and \(P\) at different stages of the pipeline at different times. This means that we substantially reduce our memory complexity, but our time complexity is unchanged and serial operations are avoided. \\
+
+In fact, while this algorithm doesn't change the asymptotic time complexity for the algorithm (it only asymptotically reduces the space complexity), in practice, optimizing the block size to fit in with SRAM means that we get substantial practical improvements in processing \emph{time} as well. 
+\textbf{Question}: Block size and sequence length don't necessarily line up. Block size is optimized for the hardware we're running on and may be lesss than the sequence length (in theory). So how does the softmax get computed if sequence length and block size don't cleanly match up? \\ 
+\textbf{Answer}: First, computing the attention scores is easy. If block size is less than seq length, we compute the attention scores for some subset \(S_{i:i+B, j:j+B}\) of the attention scores matrix. We have an ironclad guarantee that this \emph{portion} of the attention scores matrix is computed completely and correctly. \\
+Computing \(P\) is trickier, because we may not make it all the way through a row. This means we need a way to handle \emph{incomplete overlaps} in rows of \(P\) while maintaining numerical correctness and algorithmic efficiency. How does this happen?
+To handle incomplete overlaps in the softmax computation, FlashAttention processes the softmax in an incremental manner across blocks while maintaining numerical stability.
+
+First, within each block, we compute a local maximum for numerical stability:
+
+\[
+m_{\text{local}, i} = \max_{j \in \text{block}} S_{ij}
+\]
+
+As additional blocks are processed, we update the global row-wise maximum incrementally:
+
+\[
+m_{\text{global}, i} = \max(m_{\text{global}, i}, m_{\text{local}, i})
+\]
+
+Once all blocks are processed, the final softmax normalization is applied using the global maximum:
+
+\[
+P_{ij} = \frac{\exp(S_{ij} - m_{\text{global}, i})}{\sum_j \exp(S_{ij} - m_{\text{global}, i})}
+\]
+
+Handling value aggregation also requires incremental accumulation across blocks:
+
+\[
+O_i = \sum_j P_{ij} V_j
+\]
+
+Each block processes partial results, and the final output is obtained after all relevant blocks have been processed.
+
+This approach ensures that although the computation is broken into smaller chunks, the final result is mathematically equivalent to full attention computation across the entire sequence. The algorithm processes different blocks in a streaming fashion, allowing for efficient memory usage without sacrificing accuracy.
+
 \section{Mixture of Experts (MoE) Model}
 A MoE is a more compute-efficient innovation on the typical transformer model that involves modifying the Feed Forward Network (FFN) layers of a LLM. Specifically, each dense FFN Layer is replaced with a sparse MoE FFN layer, which is composed of a gate network and a certain number of experts. The gate network is composed of learned parameters and is pretrained at  the same time as the rest of the network. The experts are a series of smaller FFNs. At train time and at inference time, the learned router directs specific tokens to be processed by only a subset of the total parameters present in the FFN layer. Each one of these distinct subsets is called an "expert" and is a full, unique FFN. A single token can be attended to by one or more experts. 
 
@@ -4260,7 +4353,77 @@ The log likelihood of a gaussian distribution evaluates to
 Maximizing the log likelihood of a Gaussian distribution means finding the value of z that minimizes this (to understand why, see my section on Maximum Likelihood Estimation in the Estimation Theory Fundamentals section). \\
 
 Meanwhile, if we assume the data x given z follows a Bernouli Distribution (suitable for binary or normalized data), maximizing \(\log(p(x|z))\) is equivalent to minimizing the Binary Crossentropy Loss. Pretty cool.
+\section{DeepSeek R1 \& Group Relative Policy Optimization}
+DeepSeek's R1 algorithm is an open-source, open-weight LLM that matched many of the capabilities of the most advanced frontier LLMs in January 2025. It uses a fairly standard large-scale pretraining process, paired with \emph{Unsupervised} Group Relative Policy Optimization reinforcement learning and chain-of-thought prompting to achieve SOTA performance in math and coding capabilities. Here I will review the paper's algorithms. \\
 
+\subsection{Group Relative Policy Optimization}
+Group relative policy optimization is an online, on-policy RL algorithm very similar to Proximal Policy Optimization. In fact, the only real differences between the two are:
+
+\begin{enumerate}
+\item The objective function \(\mathcal{J}(\theta)\) in PPO maximizes expected cumulative reward over a rollout from time \(t=0 \rightarrow \tau\). In GRPO, we maximize expected cumulative reward over \(G\) sampled outputs to the same question \(q\). 
+\item Rather than doing entropy regularization explicitly as we might in PPO, GRPO uses a KL-Divergence term to explicitly penalize the model from drifting too far from the original policy, even if it occurs gradually, while also implicitly preserving exploration, because we assume that \(\pi_\text{ref}\) is already optimized to generate diverse responses. 
+\item The Advantage function captures the relative performance within a group, rather than performance relative to \emph{all training samples}. This means that we explicitly get more stable learning, because total advantages across all minibatches in a given group will be constant. And it also means we get better context-specific rewards which lead to better local exploration and enhanced policy diversity.
+\end{enumerate}
+
+The full equation for GRPO is:
+
+\noindent
+\resizebox{1.4\linewidth}{!}{%
+$
+\mathcal{J}(\theta) = \mathbb{E}_{q \sim P(Q), \{o_i\}_{i=1}^{G} \sim \pi_{\text{old}}(O|q)}
+\left[
+\frac{1}{G} \sum_{i=1}^{G}
+\min \left(
+\frac{\pi_\theta(o_i | q)}{\pi_{\theta_{\text{old}}}(o_i | q)} A_i, 
+\text{clip}\left(\frac{\pi_\theta(o_i | q)}{\pi_{\theta_{\text{old}}}(o_i | q)}, 1 - \epsilon, 1 + \epsilon\right) A_i
+\right) 
+- \beta \mathbb{D}_{\text{KL}}(\pi_{\theta} \| \pi_{\text{ref}})
+\right]
+$
+}
+
+Again, notice the similarities between this and PPO. Literally the only three differences are the three listed above. 
+
+The KL divergence equation used in GRPO is:
+
+\[
+\mathbb{D}_{\text{KL}}(\pi_{\theta} \| \pi_{\text{ref}}) = 
+\frac{\pi_{\text{ref}}(o_i | q)}{\pi_{\theta}(o_i | q)} - \log \frac{\pi_{\text{ref}}(o_i | q)}{\pi_{\theta}(o_i | q)} - 1
+\]
+
+And the advantage function is:
+
+\[
+A_i = \frac{r_i - \text{mean}(\{r_1, r_2, \dots, r_G\})}{\text{std}(\{r_1, r_2, \dots, r_G\})}
+\]
+
+Note that if we were only doing one gradient update per group, then the advantage function \(A\) would effectively be constant. Instead, we typically do multiple minibatch gradient updates in a single group.
+
+
+\subsection{Chain-of-Thought Prompting}
+Chain of Thought Prompting is a method which encourages LLMs to "think harder" about more challenging problems by prompting them to encode their reasoning process (chain of thought) and their final answer in their response. They are told to output their reasoining process within \texttt{<think><think>} tags and their answer, which must come after, in \texttt{<answer><answer>} tags. The result is that the LLM will not terminate its chain of thought until it arrives at some reasonable answer, and thus will devote more tokens in their response (and more compute resources) to problems which have a more challenging answer. This has been shown to substantially improve model reasoning capability on complicated problems by resolving the fixed-compute-per-output-token problem, which many believed was a foundational limitation of LLMs that necessitated the development of fundamentally different architectures in order to achieve advanced machine intelligence. Here's an example of a chain-of-thought prompt from the DeepSeek Paper:
+
+\subsection{Reward Signal}
+Typically the reward signal comes from human data (RLHF) to align the model's usability with the way humans expect to interact with it. But here we use \emph{Accuracy Rewards} (was the model's final answer/code correct) and \emph{Forma Rewards} (did the model correctly adhere to the format provided in the prompt. These rewards are both automated and therefore are unsupervised. This is a major improvement that, coupled iwth the emergent behavior observed when utilizing chain-of-though prompting and ultralong context length inputs that are now possible thanks to things like Ring Attention, mean there is a very very high upper bound on LLM performance. 
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{./deepseekcot.png} % Adjust the width as needed
+\caption{An example of a chain-of-thought prompt}
+\end{figure}
+
+So, the full process / big picture is this:
+\begin{itemize}
+\item Pretrain the model normally (with chain-of-thought prompting)
+\item Use GRPO to fine-tune the model on tasks like coding and math. 
+\item with chain of thought prompting, behavior will naturally emerge in which the model devotes more output tokens to challenging problems, and also a dramatic increase in reasoning ability. 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1.0\textwidth]{./deepseekresponse.png} % Adjust the width as needed
+\caption{As training progresses, we observe an increase in response length alongside an increase in reasoning ability and problem solving accuracy}
+\end{figure}
+\end{itemize}
 
 \section{Multivariate Gaussians}
 
