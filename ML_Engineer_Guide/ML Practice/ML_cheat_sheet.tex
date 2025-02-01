@@ -105,6 +105,7 @@ Which is all possible permutations of \((1, 2, 3)\) and summing across the resul
 
 \subsection{Rank \& Span}
 The \textbf{rank} of a matrix is the dimension of the vector space spanned by its columns. This is equivalent to the maximal number of linearly independent columns and also to the maximum linearly independent number of rows. Note that this means the maximal number of linearly independent columns must necessarily equal the maximal number of linearly independent rows, for square or non-square matrices. \\
+\textbf{full rank} Means the a matrix of dimensions \((m,n)\) has \(\text{min}(m,n)\) linearly independent rows and columns. 
 \subsubsection{Span}
 
 A set \(\mathbb{S}\) of vectors \textbf{span} a vector space if every vector in that space can be produced by some sequence of linear combinations involving only the vectors in \(\mathbb{S}\). \\
@@ -2771,7 +2772,34 @@ Mahalanobis distance works well for assessing similarity or anomaly because it a
 \end{itemize}
 
 Mahalanobis distance is invaluable for applications where the underlying data is multivariate and the relationship between variables is important. It is particularly effective when working with normally distributed data or when the scale and correlation within the data need to be considered.
-\section{Fourier Series and Transforms}
+\section{Discrete Time Fourier Series}
+The Discrete-Time Fourier Series (DTFS) is used to represent discrete, periodic time-domain signals in the frequency domain.
+
+\subsection{Formulation}
+A periodic discrete-time signal $x[n]$ with period $N$ can be expressed as:
+\begin{equation}
+    x[n] = \sum_{k=0}^{N-1} C_k e^{j \frac{2\pi}{N} k n},
+\end{equation}
+where the DTFS coefficients $C_k$ are computed as:
+\begin{equation}
+    C_k = \frac{1}{N} \sum_{n=0}^{N-1} x[n] e^{-j \frac{2\pi}{N} k n}.
+\end{equation}
+These coefficients $C_k$ form the spectral decomposition of $x[n]$ in the frequency domain, representing its discrete Fourier series.
+
+\subsection{Example Calculation}
+Consider $x[n] = \{1,2,3,0\}$ with period $N=4$. The DTFS coefficients are computed as follows:
+\begin{align*}
+    C_0 &= \frac{1}{4} (1 + 2 + 3 + 0) = 1.5. \\
+    C_1 &= \frac{1}{4} \sum_{n=0}^{3} x[n] e^{-j \frac{2\pi}{4} (1) n} \\
+        &= \frac{1}{4} \left( 1 e^{-j 0} + 2 e^{-j \pi/2} + 3 e^{-j \pi} + 0 e^{-j 3\pi/2} \right) \\
+        &= \frac{1}{4} \left( 1 + 2(-j) + 3(-1) + 0(j) \right) = -0.5 - 0.5j. \\
+    C_2 &= \frac{1}{4} \sum_{n=0}^{3} x[n] e^{-j \frac{4\pi}{4} n} \\
+        &= \frac{1}{4} (1 e^{-j0} + 2 e^{-j\pi} + 3 e^{-j2\pi} + 0 e^{-j3\pi}) = 0. \\
+    C_3 &= \frac{1}{4} \sum_{n=0}^{3} x[n] e^{-j \frac{6\pi}{4} n} \\
+        &= \frac{1}{4} (1 e^{-j0} + 2 e^{-j3\pi/2} + 3 e^{-j3\pi} + 0 e^{-j9\pi/2}) \\
+        &= -0.5 + 0.5j.
+\end{align*}
+\section{Fourier Transforms}
 \subsection{Euler's Identity}
 Euler's Identity is a foundational mathematical theorem that states any sinusoidal function can be expressed as a complex exponential: 
 \[e^{i\pi} = -1\]
@@ -4353,7 +4381,7 @@ The log likelihood of a gaussian distribution evaluates to
 Maximizing the log likelihood of a Gaussian distribution means finding the value of z that minimizes this (to understand why, see my section on Maximum Likelihood Estimation in the Estimation Theory Fundamentals section). \\
 
 Meanwhile, if we assume the data x given z follows a Bernouli Distribution (suitable for binary or normalized data), maximizing \(\log(p(x|z))\) is equivalent to minimizing the Binary Crossentropy Loss. Pretty cool.
-\section{DeepSeek R1 \& Group Relative Policy Optimization}
+\section{R1 \& Group Relative Policy Optimization (Advanced ML Concept)}
 DeepSeek's R1 algorithm is an open-source, open-weight LLM that matched many of the capabilities of the most advanced frontier LLMs in January 2025. It uses a fairly standard large-scale pretraining process, paired with \emph{Unsupervised} Group Relative Policy Optimization reinforcement learning and chain-of-thought prompting to achieve SOTA performance in math and coding capabilities. Here I will review the paper's algorithms. \\
 
 \subsection{Group Relative Policy Optimization}
